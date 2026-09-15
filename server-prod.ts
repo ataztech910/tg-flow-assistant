@@ -17,8 +17,13 @@
 //   ADMIN_SECRET              enables GET /admin/leads/<id> (?format=csv|json) to export collected
 //                             leads — required to be set for that route to work at all; unset means
 //                             the route is refused outright, not left open
+//   EVENT_SECRET              enables POST /event/<bot-id>/<node-id> so an external system can push
+//                             a monitoring/alert event into an `event` node's template and have it
+//                             broadcast to everyone who reached a `subscribe` node. Separate from
+//                             ADMIN_SECRET on purpose — this one's handed to third-party systems, so
+//                             it should be rotatable without touching the leads-export secret.
 
-import { webhookCallback } from "https://deno.land/x/grammy@v1.31.0/mod.ts";
+import { Bot, webhookCallback } from "https://deno.land/x/grammy@v1.31.0/mod.ts";
 import { timingSafeEqual } from "node:crypto";
 import { FlowEngine } from "./engine.ts";
 import { createTelegramBot } from "./telegram-adapter.ts";
@@ -51,6 +56,7 @@ const useKv = await kvAvailable();
 const PUBLIC_URL = requireEnv("PUBLIC_URL").replace(/\/$/, "");
 const WEBHOOK_SECRET = Deno.env.get("WEBHOOK_SECRET") || undefined;
 const ADMIN_SECRET = Deno.env.get("ADMIN_SECRET") || undefined;
+const EVENT_SECRET = Deno.env.get("EVENT_SECRET") || undefined;
 const botIds = requireEnv("PROD_BOT_IDS").split(",").map((s) => s.trim()).filter(Boolean);
 
 if (botIds.length === 0) {
@@ -58,6 +64,8 @@ if (botIds.length === 0) {
 }
 
 const handlers = new Map<string, (req: Request) => Promise<Response>>();
+const engines = new Map<string, FlowEngine>();
+const bots = new Map<string, Bot>();
 
 for (const id of botIds) {
   const token = requireEnv(`BOT_TOKEN_${id}`);
@@ -66,9 +74,11 @@ for (const id of botIds) {
   const flowYaml = await Deno.readTextFile(`./bots/${id}/flow.yaml`);
   const engine = new FlowEngine(useKv ? `kv:${id}` : `./bots/${id}/data`);
   engine.loadFlow(flowYaml);
+  engines.set(id, engine);
 
   const bot = createTelegramBot(token, engine, { providerToken, mediaDir: `./bots/${id}/media` });
   await bot.init(); // required before handleUpdate() will accept webhook requests
+  bots.set(id, bot);
 
   handlers.set(id, webhookCallback(bot, "std/http", { secretToken: WEBHOOK_SECRET }));
 
@@ -152,6 +162,39 @@ Deno.serve({ port: PORT }, async (req) => {
       });
     }
     return new Response(JSON.stringify(leads, null, 2), {
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  const eventMatch = url.pathname.match(/^\/event\/([^/]+)\/([^/]+)$/);
+  if (req.method === "POST" && eventMatch) {
+    const [, botId, nodeId] = eventMatch;
+    if (!EVENT_SECRET) return new Response("Event endpoint not configured", { status: 404 });
+    if (!secretMatches(req.headers.get("x-webhook-secret"), EVENT_SECRET)) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+    const engine = engines.get(botId);
+    const bot = bots.get(botId);
+    if (!engine || !bot) return new Response("Unknown bot", { status: 404 });
+
+    let payload: Record<string, string>;
+    try {
+      payload = await req.json();
+    } catch {
+      return new Response("Invalid JSON body", { status: 400 });
+    }
+
+    const result = await engine.notifyEvent(nodeId, payload);
+    if (!result) return new Response(`Unknown event node "${nodeId}"`, { status: 404 });
+
+    const outcomes = await Promise.allSettled(
+      result.userIds.map((uid) => bot.api.sendMessage(uid, result.text)),
+    );
+    const sent = outcomes.filter((o) => o.status === "fulfilled").length;
+    for (const o of outcomes) {
+      if (o.status === "rejected") console.error(`event "${nodeId}" delivery failed:`, o.reason);
+    }
+    return new Response(JSON.stringify({ sent, subscribers: result.userIds.length }), {
       headers: { "content-type": "application/json" },
     });
   }

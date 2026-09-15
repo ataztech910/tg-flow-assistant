@@ -16,7 +16,7 @@ nodes:
 - `start_node` MUST be one of the keys under `nodes`.
 - Every node id is an arbitrary snake_case string, unique within the file.
 - Every field named `next`, `on_error`, or `on_fail` MUST reference an existing node id.
-- Do not invent node types beyond the seven listed below.
+- Do not invent node types beyond the nine listed below.
 - `{{field}}` can be used in any `text`, `url`, `headers`, or `body` value, anywhere in the file, to
   insert a value collected earlier by an `input` node (or stored by `save_response_as`). An unknown
   field renders as an empty string — don't reference a field before an `input` node has collected it.
@@ -189,6 +189,33 @@ check_purchased:
 - `equals` only compares strings. There's no `>`, `<`, "contains", or multi-branch (more than
   true/false) support yet — for anything more complex, chain multiple `condition` nodes.
 
+### `subscribe`
+Adds whoever reaches this node to the bot's subscriber list, then continues straight to `next`. No
+message of its own — pair it with a `message`/`menu` that explains what they're subscribing to.
+```yaml
+join_alerts:
+  type: subscribe
+  next: subscribed_confirmation
+```
+- The subscriber list is per-bot, flat (no topics/channels yet) — every subscriber gets every
+  `event` node's broadcasts. If a flow needs separate audiences, that's out of scope today.
+- There's no `unsubscribe` node type yet. Don't invent one.
+
+### `event`
+Not reached through normal flow navigation — it's the target of an external system's
+`POST /event/<bot-id>/<this-node-id>` (see README "Exporting collected leads" section for the
+sibling `/admin/leads` pattern; same auth style, a shared secret in an `X-Webhook-Secret` header).
+Renders `message` against that request's JSON body and sends the result to every subscriber.
+```yaml
+otel_alert:
+  type: event
+  message: "🚨 {{service}}: {{message}} (severity: {{severity}})"
+```
+- `{{field}}` here refers to keys in the POSTed JSON body, not `state.data` — an `event` node has no
+  user and no prior flow state, unlike every other `{{field}}` usage in this document.
+- Don't give an `event` node a `next`, buttons, or make anything else `next` to it — nothing in the
+  flow can reach it, and it doesn't continue anywhere itself. It's a broadcast trigger, not a step.
+
 ## Common patterns
 
 ### "Book a call / appointment"
@@ -233,12 +260,41 @@ booking_confirmed:
   text: "Thanks {{booking_name}}! We'll confirm {{booking_time}} shortly."
 ```
 
+### Monitoring / alerts ("notify me when an external system has something to say")
+This is what `subscribe` + `event` are for. Let users opt in, then have the external system (a CI
+pipeline, an OpenTelemetry collector, a cron job, anything that can make an HTTP POST) push events
+in as they happen.
+```yaml
+welcome:
+  type: menu
+  text: "Get notified about deploy failures?"
+  buttons:
+    - label: "Yes, subscribe me"
+      next: join_alerts
+
+join_alerts:
+  type: subscribe
+  next: subscribed_confirmation
+
+subscribed_confirmation:
+  type: message
+  text: "You're in — you'll get a message here whenever something fires."
+
+deploy_failed:
+  type: event
+  message: "🔴 Deploy failed: {{service}} on {{branch}} — {{error}}"
+```
+The external system then does `curl -X POST https://<your-app>/event/<bot-id>/deploy_failed -H
+"X-Webhook-Secret: ..." -d '{"service":"api","branch":"main","error":"..."}'` whenever it wants to
+alert everyone subscribed. No polling, no bot-side scheduler involved.
+
 ### Scheduled / recurring content (e.g. "send a tip every 6 hours")
-**Not supported yet.** This engine only reacts to a specific user's messages/button clicks — it has
-no scheduler and no persisted list of every user who ever started the bot, so it cannot push
-messages on a timer to anyone. Don't generate a flow that assumes this works; if asked for it,
-say it isn't supported yet rather than silently omitting it or faking it with an `input`/`webhook`
-workaround.
+**Not supported by this engine itself** — it has no internal scheduler or timer. But combined with
+`subscribe`/`event` above, an *external* scheduler (cron, a serverless scheduled function, GitHub
+Actions on a schedule, ...) hitting `/event/<bot-id>/<node-id>` on a timer covers this legitimately —
+the flow doesn't need to know it's on a schedule, it's just another `event` POST. Don't generate a
+flow that assumes BotFlow schedules anything on its own; if asked for recurring content, use this
+pattern and say the actual timing lives outside the bot, in whatever's doing the POSTing.
 
 ## Worked example
 

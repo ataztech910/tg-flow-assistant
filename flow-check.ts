@@ -24,6 +24,13 @@ function eachRef(node: FlowNode, cb: (field: string, ref: string) => void): void
       cb("if_true", node.if_true);
       cb("if_false", node.if_false);
       break;
+    case "subscribe":
+      cb("next", node.next);
+      break;
+    case "event":
+      // No next/buttons — reached from outside the flow (an external POST), not by walking from
+      // start_node. Handled as its own reachability root below, not a dead end.
+      break;
   }
 }
 
@@ -42,12 +49,22 @@ export function checkFlow(flow: FlowDefinition): FlowCheckResult {
 
   if (!nodeIds.has(flow.start_node)) {
     errors.push(`start_node "${flow.start_node}" is not defined in nodes`);
+  } else if (flow.nodes[flow.start_node].type === "event") {
+    // Reaching an event node re-executes it (there's no meaningful "next" from one), so an event
+    // node as start_node would make every /start loop on itself. engine.ts guards against the
+    // resulting infinite recursion at runtime too, but this is the case where the flow is just
+    // wrong and should be rejected outright rather than silently produce a bot that never starts.
+    errors.push(`start_node "${flow.start_node}" is an "event" node — those are only reached externally, never as a flow's starting point`);
   }
 
   for (const [id, node] of Object.entries(flow.nodes)) {
     eachRef(node, (field, ref) => {
       if (!nodeIds.has(ref)) {
         errors.push(`node "${id}": ${field} references unknown node "${ref}"`);
+      } else if (flow.nodes[ref].type === "event") {
+        errors.push(
+          `node "${id}": ${field} references "${ref}", an "event" node — those are only reached externally (an HTTP POST), never via next/buttons/branches`,
+        );
       }
     });
   }
@@ -55,7 +72,13 @@ export function checkFlow(flow: FlowDefinition): FlowCheckResult {
   const unreachable: string[] = [];
   if (errors.length === 0) {
     const visited = new Set<string>();
-    const queue = [flow.start_node];
+    // `event` nodes are entry points in their own right (an external system's POST, not a path
+    // from start_node) — treating them as extra roots keeps them out of `unreachable` correctly,
+    // instead of flagging by-design external triggers as if they were dead ends.
+    const eventRoots = Object.entries(flow.nodes)
+      .filter(([, n]) => n.type === "event")
+      .map(([id]) => id);
+    const queue = [flow.start_node, ...eventRoots];
     while (queue.length) {
       const id = queue.shift()!;
       if (visited.has(id) || !nodeIds.has(id)) continue;

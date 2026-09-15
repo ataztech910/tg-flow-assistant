@@ -1,6 +1,6 @@
 import * as jsYaml from "npm:js-yaml@5.4.2";
 import { type Button, type FlowDefinition, FlowDefinitionSchema, type Media } from "./schema.ts";
-import { saveLead } from "./store.ts";
+import { addSubscriber, listSubscribers, saveLead } from "./store.ts";
 
 export type { Button, Media };
 
@@ -147,7 +147,32 @@ export class FlowEngine {
           amount: node.amount,
           payload: node.payload,
         };
+
+      case "subscribe":
+        await addSubscriber(this.dataDir, userId);
+        return this.execute(userId, node.next);
+
+      case "event":
+        // Only ever reached externally, via notifyEvent below — not through normal flow
+        // navigation. Deliberately NOT calling handleStart here: if start_node or a next/button
+        // is ever misconfigured to point at an event node (flow-check.ts rejects this for
+        // start_node, but a stale/hand-edited flow.yaml could still reach here), handleStart
+        // would re-execute this same node and recurse forever. A plain inert reply is always
+        // safe, recursion or not.
+        return { kind: "message", nodeId, text: "⚠️ This step isn't meant to be reached directly." };
     }
+  }
+
+  /** Renders an `event` node's message against an external system's payload and returns who to
+   *  send it to. Telegram-agnostic like the rest of this class — telegram-adapter.ts/server(-prod)
+   *  .ts do the actual sending via bot.api.sendMessage for each userId. */
+  async notifyEvent(
+    nodeId: string,
+    payload: Record<string, string>,
+  ): Promise<{ text: string; userIds: number[] } | null> {
+    const node = this.flow.nodes[nodeId];
+    if (!node || node.type !== "event") return null;
+    return { text: render(node.message, payload), userIds: await listSubscribers(this.dataDir) };
   }
 
   handleStart(userId: number): Promise<FlowResult> {

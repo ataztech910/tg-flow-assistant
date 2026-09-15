@@ -69,6 +69,19 @@ const ConditionNodeSchema = z.object({
   if_false: nodeIdRef,
 });
 
+const SubscribeNodeSchema = z.object({
+  type: z.literal("subscribe"),
+  next: nodeIdRef,
+});
+
+// Not reached via `next` like other nodes — it's the target of an external system's HTTP POST
+// (see server.ts/server-prod.ts's `/event/<bot-id>/<node-id>` route), rendered against that
+// request's JSON body and broadcast to everyone who reached a `subscribe` node.
+const EventNodeSchema = z.object({
+  type: z.literal("event"),
+  message: z.string().min(1),
+});
+
 export const FlowNodeSchema = z.discriminatedUnion("type", [
   MessageNodeSchema,
   MenuNodeSchema,
@@ -77,6 +90,8 @@ export const FlowNodeSchema = z.discriminatedUnion("type", [
   CollectNodeSchema,
   PaymentNodeSchema,
   ConditionNodeSchema,
+  SubscribeNodeSchema,
+  EventNodeSchema,
 ]);
 
 export const FlowDefinitionSchema = z.object({
