@@ -163,6 +163,19 @@
       `dataDir` вида `"kv:<id>"` пишет в `Deno.openKv()` вместо диска (эфемерного на Deploy).
       `engine.ts` не менялся — просто получает другую строку. Проверено локально записью+чтением
       через реальный `Deno.openKv()`.
+- [x] **Прод-инцидент: `Deno.openKv is not a function`, бот молчал на payment-узле** — локальная
+      проверка выше была неполной: на новой единой `deno deploy` платформе `Deno.openKv()` не
+      работает "из коробки" даже в проде — БД нужно явно создать и привязать к приложению
+      (`deno deploy database provision --kind denokv` + `database assign`), иначе на любом
+      `collect`-узле бросается исключение, которое молча съедает `bot.catch` — пользователь просто
+      не получает ответа, никакого сообщения об ошибке. Уронило именно payment-флоу, потому что
+      перед оплатой стоял `collect`. Исправлено: (1) создана и привязана `botflow-kv` для
+      `botflow-prod`; (2) `server-prod.ts` больше не считает `kv:` безусловным — при старте реально
+      пробует `Deno.openKv()` и только при успехе использует KV, иначе откатывается на
+      `bots/<id>/data/leads.jsonl` на диске (актуально для Docker/Cloud Run/AWS — там
+      `Deno.openKv()` всё ещё unstable API без флага, которого мы сознательно не передаём).
+      Задокументировано в README (шаг provision+assign в секции Deno Deploy, обновлена секция
+      "Deploying elsewhere").
 - [x] **Живой деплой выполнен и проверен** — не `deployctl` (отдельный пакет), а `deno deploy`,
       встроенный в сам Deno CLI 2.7.14 — новый продукт с `sandbox`/`database` подкомандами, другой
       набор флагов. По пути споткнулись дважды: (1) `--entrypoint` через `deno deploy create`
@@ -201,3 +214,29 @@
 - [x] Аудит мёртвого кода перед опенсорсом — реального мёртвого кода почти не нашлось; удалён
       `mermaid.ts` (полностью вытеснен `flow-to-reactflow.ts`+дашбордом, нигде не импортировался);
       запинены версии `npm:js-yaml`/`npm:zod`; `deno lint` теперь чист по всему проекту
+- [x] **Прод-инцидент: платёж молчал, звёзды не рендерились в Desktop/Web, реальные данные
+      юзера не собирались без `input`** — три отдельных находки в одном заходе:
+      1. `Deno.openKv()` не работает на новой единой `deno deploy` платформе без явного
+         `database provision`+`assign` — создано и привязано; `server-prod.ts` теперь пробует
+         `Deno.openKv()` при старте и откатывается на диск, если не вышло (Docker/Cloud Run/AWS).
+      2. `.gitignore`/`.dockerignore` резали весь `bots/`, включая `flow.yaml`/`media/`, которые
+         `deno deploy`'s local-source загрузчик реально учитывает (использует правила из
+         `.gitignore`) — сломало бы одинаково и Docker-путь. Исправлено на `bots/*/*` +
+         точечные `!`-исключения для `flow.yaml`/`media/`, `meta.json`/`data/`/`versions/`
+         остаются игнорируемыми.
+      3. Telegram Stars (XTR)-инвойсы иногда не рендерятся в Desktop/Web-клиенте (баг самого
+         Telegram Desktop, issue #30266) — сервер шлёт корректно, но выглядит как молчание.
+         Добавлено предупреждающее сообщение перед любым Stars-инвойсом в `telegram-adapter.ts`
+         (не в конкретном `flow.yaml` — на уровне кода, для всех ботов).
+      Заодно: `engine.ts`/`telegram-adapter.ts` теперь на каждом апдейте кладут в `state.data`
+      реальные `telegram_id`/`telegram_username`/`telegram_first_name`/`telegram_last_name`/
+      `telegram_language_code` — `collect` их всегда включает независимо от `fields` и от того,
+      спрашивал ли флоу что-то через `input`; переживают `/start` (не стираются `reset()`).
+      `dsl-rules.md` обновлён.
+- [x] **Выгрузка лидов с прода** — `deno deploy database query` не работает для Deno KV (только
+      для SQL-подключений типа Postgres/Prisma), поэтому сделан свой эндпоинт прямо в
+      `server-prod.ts`: `GET /admin/leads/<id>` (`?format=csv|json`), защищён заголовком
+      `X-Admin-Secret` (не query-параметром — не светится в логах), требует `ADMIN_SECRET` в env,
+      без него роут отдаёт 404, а не работает "открыто по умолчанию". Читает из KV в проде на
+      Deno Deploy, из `bots/<id>/data/leads.jsonl` на Docker/Cloud Run/AWS — тот же `useKv` флаг,
+      что уже был. Задокументировано в README, добавлено в `deploy.env.example`.

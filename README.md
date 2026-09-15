@@ -164,13 +164,21 @@ a static "nothing to see here" response.
 
 1. Finish editing locally, make sure `bots/<id>/flow.yaml` (and `bots/<id>/media/` if used) are
    how you want them — these get shipped as regular files as part of the deploy.
-2. In your Deno Deploy project (dash.deno.com), set these as environment variables/secrets:
+2. Provision a Deno KV database and assign it to the app — **this does not happen automatically**,
+   and `collect` nodes fail silently (the message is swallowed by `bot.catch`, the user just gets
+   no reply) without it:
+   ```sh
+   deno deploy database provision botflow-kv --org=<org> --kind denokv
+   deno deploy database assign botflow-kv --org=<org> --app=<app>
+   ```
+   One-time setup per app. `deno deploy database list --org=<org>` confirms the assignment.
+3. In your Deno Deploy project (dash.deno.com), set these as environment variables/secrets:
    - `PROD_BOT_IDS` — comma-separated bot ids to activate, e.g. `8984073292`
    - `BOT_TOKEN_<id>` — that bot's token, one var per id in `PROD_BOT_IDS`
    - `PUBLIC_URL` — this deployment's own base URL, e.g. `https://yourproject.deno.dev`
    - optional: `BOT_PROVIDER_TOKEN_<id>` (real-currency payments), `WEBHOOK_SECRET` (recommended —
      checked against Telegram's `X-Telegram-Bot-Api-Secret-Token` header on every webhook call)
-3. Deploy — this project uses the `deno deploy` subcommand built into the Deno CLI itself (not the
+4. Deploy — this project uses the `deno deploy` subcommand built into the Deno CLI itself (not the
    separate `deployctl` package):
    ```sh
    deno deploy --prod
@@ -181,22 +189,45 @@ a static "nothing to see here" response.
    below) must point at the stable domain, not a preview URL, or the webhook breaks on every deploy.
    First-time setup: `deno deploy create . --org=<org> --app=<app> --source=local --entrypoint=server-prod.ts --region=us`
    (interactive if you omit the flags — annoying to navigate, the explicit flags are easier).
-4. On startup, `server-prod.ts` calls `setWebhook` for every configured bot automatically — no
+5. On startup, `server-prod.ts` calls `setWebhook` for every configured bot automatically — no
    manual Telegram-side setup needed. Check the deploy logs for `Bot <id> (@username) webhook set
    to ...` per bot.
-5. Message the bot on Telegram — it should reply via the webhook, no polling involved.
+6. Message the bot on Telegram — it should reply via the webhook, no polling involved.
 
-`collect` nodes write to **Deno KV** in this entrypoint instead of a local file (`FlowEngine` is
-constructed with `kv:<id>` as its data dir — see `store.ts`) — Deno Deploy's isolates have no
-persistent local disk, and KV is zero-config there.
+`collect` nodes write to **Deno KV** in this entrypoint (`FlowEngine` is constructed with `kv:<id>`
+as its data dir — see `store.ts`) — Deno Deploy's isolates have no persistent local disk, so once
+step 2 above is done, this is where leads live. `server-prod.ts` probes `Deno.openKv()` at startup
+and only takes this path if it actually succeeds, so a misconfigured or missing database degrades
+to the disk-based path below instead of crashing every `collect` node — but on Deploy specifically,
+that fallback path has no persistent disk either, so leads are simply lost across isolate restarts
+until step 2 is done properly. Check the logs.
+
+### Exporting collected leads
+
+There's no dashboard in production, so `collect` data (which now always includes real
+`telegram_id`/`telegram_username`/`telegram_first_name`/`telegram_last_name`/
+`telegram_language_code` fields, not just whatever an `input` node happened to ask for — see
+`dsl-rules.md`) needs its own way out. Set `ADMIN_SECRET` (any random string — `openssl rand -hex
+24`, then `deno deploy env add ADMIN_SECRET <value>`) and hit:
+
+```sh
+curl -H "X-Admin-Secret: <value>" https://<your-app>.deno.net/admin/leads/<bot-id>
+curl -H "X-Admin-Secret: <value>" "https://<your-app>.deno.net/admin/leads/<bot-id>?format=csv" -o leads.csv
+```
+
+The secret goes in a header, not the URL, so it doesn't end up in access logs. Unset `ADMIN_SECRET`
+and the route 404s outright rather than sitting open — this is off by default. Works identically on
+Docker/Cloud Run/AWS, reading from `bots/<id>/data/leads.jsonl` there instead of KV.
 
 ## Deploying elsewhere (Docker, Google Cloud Run, AWS)
 
 `server-prod.ts` isn't tied to Deno Deploy — it's a plain `Deno.serve` HTTP server, so any platform
-that runs a container works. A real container (unlike Deno Deploy's isolates) has an actual
-filesystem and can spawn subprocesses, so `Deno.openKv()` still works for `collect` (backed by a
-local SQLite file instead of Deploy's managed FoundationDB — see `store.ts`), it's just on you to
-keep that file on a persistent volume.
+that runs a container works. `Deno.openKv()` is still an unstable API off Deno Deploy's own managed
+runtime (it needs an `--unstable-kv` flag this project deliberately doesn't pass), so `server-prod.ts`
+detects that at startup and `collect` nodes write to a local file instead —
+`bots/<id>/data/leads.jsonl`, the same format and location `server.ts` uses locally. A real
+container (unlike Deno Deploy's isolates) has an actual filesystem, so this just needs to sit on a
+persistent volume, same as `flow.yaml` and media.
 
 ### Docker / any VPS
 
@@ -207,9 +238,10 @@ docker run -p 8000:8000 --env-file deploy.env -v botflow-data:/app/bots botflow
 
 The image only ever imports `server-prod.ts`'s own dependency graph — no dashboard code runs, same
 as on Deno Deploy. The `-v botflow-data:/app/bots` volume is what makes `bots/<id>/flow.yaml`,
-uploaded media, and the KV SQLite file survive a container restart — skip it and you get a fresh
-empty state every time. Same env vars as the Deno Deploy section above (`PROD_BOT_IDS`,
-`BOT_TOKEN_<id>`, `PUBLIC_URL`, optional `WEBHOOK_SECRET`) via `--env-file` or `-e`.
+uploaded media, and `bots/<id>/data/leads.jsonl` survive a container restart — skip it and you get
+a fresh empty state every time. Same env vars as the Deno Deploy section above (`PROD_BOT_IDS`,
+`BOT_TOKEN_<id>`, `PUBLIC_URL`, optional `WEBHOOK_SECRET`) via `--env-file` or `-e` — no database
+provisioning step needed here, unlike Deno Deploy.
 
 Before the first run, copy each bot's `flow.yaml` (and `media/` if used) into the volume — e.g.
 `docker run --rm -v botflow-data:/app/bots -v "$(pwd)/bots":/host alpine cp -r /host/. /app/bots/`
@@ -240,8 +272,8 @@ revision, so unlike Deno Deploy there's no separate "preview vs. production" dom
 - **App Runner** — closest to Cloud Run: point it at the `Dockerfile`, set the same env vars
   (`PROD_BOT_IDS`, `BOT_TOKEN_<id>`, `PUBLIC_URL` = the App Runner-assigned URL, `WEBHOOK_SECRET`)
   via the console or `apprunner.yaml`. App Runner has no built-in persistent volume — for real
-  persistence, swap `store.ts`'s `saveLead` to write to DynamoDB or S3 instead of relying on the
-  local KV file (same pattern as the existing `kv:` branch, different backend).
+  persistence, swap `store.ts`'s `saveLead` to write to DynamoDB or S3 instead of the local
+  `leads.jsonl` file (same pattern as the existing `kv:` branch, different backend).
 - **ECS/Fargate** — same image, add an EFS volume mount at `/app/bots` in the task definition for
   actual persistence (Fargate supports EFS natively, unlike App Runner). Set env vars via the task
   definition's `environment`/`secrets` (the latter pulling from Secrets Manager for `BOT_TOKEN_<id>`).

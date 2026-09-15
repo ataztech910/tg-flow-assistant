@@ -1,4 +1,7 @@
-bots/
+bots/*/*
+!bots/*/flow.yaml
+!bots/*/media/
+!bots/*/media/**
 data/
 deploy.env
 *.env

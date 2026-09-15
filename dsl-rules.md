@@ -115,6 +115,13 @@ save_lead:
   fields: [name, email]     # optional; omit to save everything collected so far
   next: forward_to_crm
 ```
+Every saved record automatically includes the user's real, Telegram-verified identity —
+`telegram_id`, `telegram_username`, `telegram_first_name`, `telegram_last_name`,
+`telegram_language_code` — even if `fields` doesn't list them and no `input` node ever asked for
+them. This happens regardless of what the flow does; don't add an `input` node just to re-collect
+something Telegram already tells us. These same fields are also available for `{{...}}` templating
+anywhere in the flow (e.g. `Hey {{telegram_first_name}}!`) without an `input` node collecting them
+first, unlike every other field.
 
 ### `payment`
 Sends a real Telegram invoice. Two ways to price it:

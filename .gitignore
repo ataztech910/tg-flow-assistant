@@ -1,6 +1,12 @@
-# Per-bot runtime state — tokens, uploaded media, collected leads, edit history. Never commit
-# real bot credentials; these directories only exist locally after you create a bot.
-bots/
+# Per-bot runtime state. `flow.yaml` and `media/` are what server-prod.ts actually reads at
+# startup — Deno Deploy's local-source uploader and Docker builds both key off this file too, not
+# just git, so they need to stay includable. Only meta.json (real bot token), local dev leads
+# (data/), and edit history (versions/) stay excluded. A bare `bots/` here would also block the
+# negations below — git won't recurse into an ignored directory to re-include children of it.
+bots/*/*
+!bots/*/flow.yaml
+!bots/*/media/
+!bots/*/media/**
 
 # Single-bot CLI mode's local data dir (bot.ts, test-run.ts default).
 data/
@@ -9,6 +15,9 @@ data/
 deploy.env
 *.env
 !.env.example
+
+# Exported lead data (GET /admin/leads/<id>?format=csv) — real user data, never commit.
+/leads*.csv
 
 # Editor/OS noise
 .DS_Store

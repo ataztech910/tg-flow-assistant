@@ -54,14 +54,31 @@ export function createTelegramBot(
         await ctx.reply("⚠️ Payments are not configured (missing a provider token).");
         return;
       }
-      await ctx.replyWithInvoice(
-        result.title,
-        result.description,
-        result.payload,
-        result.currency,
-        [{ label: result.title, amount: result.amount }],
-        { provider_token: isStars ? "" : providerToken! },
-      );
+      // Telegram Stars (XTR) invoices are known to sometimes not render on Desktop/Web clients
+      // (e.g. https://github.com/telegramdesktop/tdesktop/issues/30266) — the send succeeds
+      // server-side either way, so a silent invoice looks identical to a broken one from here.
+      // Heading it off with a plain-text note costs nothing and saves the "is this even working"
+      // confusion for every Stars payment, not just this one.
+      if (isStars) {
+        await ctx.reply(
+          "⚠️ Sending your Stars invoice now — if it doesn't show up, check on your phone. " +
+            "Some desktop/web Telegram clients don't render Stars payments.",
+        );
+      }
+      try {
+        await ctx.replyWithInvoice(
+          result.title,
+          result.description,
+          result.payload,
+          result.currency,
+          [{ label: result.title, amount: result.amount }],
+          { provider_token: isStars ? "" : providerToken! },
+        );
+        console.log(`[${token.split(":")[0]}] Invoice sent: ${result.nodeId}`);
+      } catch (e) {
+        console.error(`[${token.split(":")[0]}] Invoice send FAILED for ${result.nodeId}:`, e);
+        throw e;
+      }
       return;
     }
 
@@ -95,6 +112,22 @@ export function createTelegramBot(
 
   bot.use((ctx: any, next: any) => {
     console.log(`[${token.split(":")[0]}] Update:`, JSON.stringify(ctx.update));
+    return next();
+  });
+
+  // Real, Telegram-verified identity — independent of whatever an `input` node does or doesn't
+  // ask. Runs on every update, before any command/handler below, so it's already in state.data
+  // by the time a flow's first node renders or a `collect` node fires.
+  bot.use((ctx: any, next: any) => {
+    if (ctx.from) {
+      engine.setUserProfile(ctx.from.id, {
+        telegram_id: String(ctx.from.id),
+        telegram_username: ctx.from.username ?? "",
+        telegram_first_name: ctx.from.first_name ?? "",
+        telegram_last_name: ctx.from.last_name ?? "",
+        telegram_language_code: ctx.from.language_code ?? "",
+      });
+    }
     return next();
   });
 

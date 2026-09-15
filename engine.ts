@@ -36,13 +36,28 @@ export class FlowEngine {
   }
 
   reset(userId: number): UserState {
-    const state: UserState = { nodeId: this.flow.start_node, data: {} };
+    // Telegram identity fields (telegram_*, set via setUserProfile) describe the real person, not
+    // this particular run through the flow — a fresh /start shouldn't make the bot forget who it's
+    // talking to, only the answers they've given so far.
+    const prior = this.state.get(userId)?.data ?? {};
+    const preserved = Object.fromEntries(
+      Object.entries(prior).filter(([k]) => k.startsWith("telegram_")),
+    );
+    const state: UserState = { nodeId: this.flow.start_node, data: preserved };
     this.state.set(userId, state);
     return state;
   }
 
   private getState(userId: number): UserState {
     return this.state.get(userId) ?? this.reset(userId);
+  }
+
+  /** Merges real, Telegram-verified profile fields (id/username/name/language — see
+   *  telegram-adapter.ts) into a user's state, independent of anything an `input` node asks. Safe
+   *  to call on every incoming update; `collect` nodes pick these up automatically. */
+  setUserProfile(userId: number, fields: Record<string, string>): void {
+    const state = this.getState(userId);
+    Object.assign(state.data, fields);
   }
 
   async execute(userId: number, nodeId: string): Promise<FlowResult> {
@@ -73,10 +88,15 @@ export class FlowEngine {
         return { kind: "message", nodeId, text: render(node.text, state.data) };
 
       case "collect": {
-        const fields = node.fields
+        const requested = node.fields
           ? Object.fromEntries(node.fields.map((f) => [f, state.data[f] ?? ""]))
           : { ...state.data };
-        await saveLead(this.dataDir, fields);
+        // Real Telegram identity always rides along, whether or not `fields` lists it — the whole
+        // point is data collected doesn't depend on the flow having thought to ask for it.
+        const profile = Object.fromEntries(
+          Object.entries(state.data).filter(([k]) => k.startsWith("telegram_")),
+        );
+        await saveLead(this.dataDir, { ...profile, ...requested });
         return this.execute(userId, node.next);
       }
 
