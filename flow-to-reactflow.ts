@@ -44,6 +44,8 @@ const ACCENT: Record<FlowNode["type"], string> = {
   collect: "#1a7f4b",
   payment: "#c23f6c",
   condition: "#6b7280",
+  subscribe: "#0f9d8f",
+  event: "#d1477a",
 };
 
 const ICON: Record<FlowNode["type"], string> = {
@@ -54,6 +56,8 @@ const ICON: Record<FlowNode["type"], string> = {
   collect: "💾",
   payment: "💳",
   condition: "🔀",
+  subscribe: "🔔",
+  event: "📡",
 };
 
 function truncate(s: string, n = 90): string {
@@ -108,6 +112,14 @@ function cardData(id: string, node: FlowNode): RFCardData {
         body: node.equals !== undefined ? `${node.field} == "${node.equals}"` : `${node.field} is set?`,
         rows: [`✓ true → ${node.if_true}`, `✗ false → ${node.if_false}`],
       };
+    case "subscribe":
+      return { ...base, body: "adds user to the subscriber list" };
+    case "event":
+      return {
+        ...base,
+        body: "triggered externally (POST /event/<bot-id>/<node-id>), not via flow navigation",
+        rows: [truncate(node.message)],
+      };
   }
 }
 
@@ -138,6 +150,12 @@ function eachNext(
       cb(node.if_true, "true");
       cb(node.if_false, "false");
       break;
+    case "subscribe":
+      cb(node.next);
+      break;
+    case "event":
+      // No next — reached externally, not walked from another node.
+      break;
   }
 }
 
@@ -153,23 +171,32 @@ function estimateHeight(data: RFCardData): number {
 export function flowToReactFlowGraph(flow: FlowDefinition): RFGraph {
   const ids = Object.keys(flow.nodes);
 
-  // BFS layering: column = shortest number of hops from start_node.
+  // BFS layering: column = shortest number of hops from start_node. `event` nodes are their own
+  // entry points (triggered externally, never reached by walking the flow) — seeded as extra
+  // column-0 roots instead of falling into the far-column "unreachable" bucket below.
   const depth = new Map<string, number>();
+  const queue: string[] = [];
   if (flow.nodes[flow.start_node]) {
     depth.set(flow.start_node, 0);
-    const queue: string[] = [flow.start_node];
-    while (queue.length) {
-      const id = queue.shift()!;
-      const d = depth.get(id)!;
-      const node = flow.nodes[id];
-      if (!node) continue;
-      eachNext(node, (target) => {
-        if (!depth.has(target) && flow.nodes[target]) {
-          depth.set(target, d + 1);
-          queue.push(target);
-        }
-      });
+    queue.push(flow.start_node);
+  }
+  for (const [id, node] of Object.entries(flow.nodes)) {
+    if (node.type === "event" && !depth.has(id)) {
+      depth.set(id, 0);
+      queue.push(id);
     }
+  }
+  while (queue.length) {
+    const id = queue.shift()!;
+    const d = depth.get(id)!;
+    const node = flow.nodes[id];
+    if (!node) continue;
+    eachNext(node, (target) => {
+      if (!depth.has(target) && flow.nodes[target]) {
+        depth.set(target, d + 1);
+        queue.push(target);
+      }
+    });
   }
   let maxDepth = 0;
   for (const d of depth.values()) maxDepth = Math.max(maxDepth, d);

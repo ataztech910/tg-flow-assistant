@@ -133,8 +133,8 @@ fix anything it flags, then drop it in and restart the bot. No TypeScript change
 
 ## Node types
 
-`message`, `menu`, `input`, `webhook`, `collect`, `payment`, `condition` — plus optional media
-(photo/video/audio/document/voice) on `message`/`menu`. Media can be a public `http(s)://` URL
+`message`, `menu`, `input`, `webhook`, `collect`, `payment`, `condition`, `subscribe`, `event` —
+plus optional media (photo/video/audio/document/voice) on `message`/`menu`. Media can be a public `http(s)://` URL
 (Telegram fetches it) or a file uploaded via the node panel's upload button — the bot sends that
 one itself (`bots/<id>/media/`), so it works even though this server has no public URL of its own.
 Full reference and examples in [`dsl-rules.md`](./dsl-rules.md).
@@ -177,7 +177,8 @@ a static "nothing to see here" response.
    - `BOT_TOKEN_<id>` — that bot's token, one var per id in `PROD_BOT_IDS`
    - `PUBLIC_URL` — this deployment's own base URL, e.g. `https://yourproject.deno.dev`
    - optional: `BOT_PROVIDER_TOKEN_<id>` (real-currency payments), `WEBHOOK_SECRET` (recommended —
-     checked against Telegram's `X-Telegram-Bot-Api-Secret-Token` header on every webhook call)
+     checked against Telegram's `X-Telegram-Bot-Api-Secret-Token` header on every webhook call),
+     `ADMIN_SECRET` (lead export, see below), `EVENT_SECRET` (monitoring/alerts, see below)
 4. Deploy — this project uses the `deno deploy` subcommand built into the Deno CLI itself (not the
    separate `deployctl` package):
    ```sh
@@ -218,6 +219,30 @@ curl -H "X-Admin-Secret: <value>" "https://<your-app>.deno.net/admin/leads/<bot-
 The secret goes in a header, not the URL, so it doesn't end up in access logs. Unset `ADMIN_SECRET`
 and the route 404s outright rather than sitting open — this is off by default. Works identically on
 Docker/Cloud Run/AWS, reading from `bots/<id>/data/leads.jsonl` there instead of KV.
+
+### Monitoring and alerts (pushing events *into* a bot)
+
+`webhook` nodes call *out*; this is the other direction — an external system (a CI pipeline, an
+OpenTelemetry collector, a cron job, anything that can POST JSON) pushes an event in, and everyone
+who opted in via a `subscribe` node gets it as a Telegram message. Two new node types, no dashboard
+support needed since it's just YAML — see `dsl-rules.md`'s "Monitoring / alerts" pattern for the
+full example. Once the flow has a `subscribe` node and an `event` node (say, `deploy_failed`), set
+`EVENT_SECRET` (same pattern as `ADMIN_SECRET` — `openssl rand -hex 24`, then `deno deploy env add
+EVENT_SECRET <value>`) and have the external system hit:
+
+```sh
+curl -X POST https://<your-app>.deno.net/event/<bot-id>/deploy_failed \
+  -H "X-Webhook-Secret: <value>" \
+  -H "content-type: application/json" \
+  -d '{"service":"api","branch":"main","error":"connection refused"}'
+```
+
+The `event` node's `message` template renders against that JSON body (`{{service}}`, `{{branch}}`,
+`{{error}}` above — not `state.data`, since there's no user or prior flow state involved) and gets
+sent to every subscriber. Response is `{"sent": N, "subscribers": M}` — `sent` can be lower than
+`subscribers` if Telegram rejects a delivery (e.g. someone blocked the bot); check the logs for
+which. Separate secret from `ADMIN_SECRET` on purpose — this one gets handed to whatever external
+system is triggering it, so it should be rotatable independently of the leads-export secret.
 
 ## Deploying elsewhere (Docker, Google Cloud Run, AWS)
 

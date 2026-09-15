@@ -1,4 +1,5 @@
 import * as jsYaml from "npm:js-yaml@5.4.2";
+import { timingSafeEqual } from "node:crypto";
 import { FlowDefinitionSchema } from "./schema.ts";
 import { flowToReactFlowGraph } from "./flow-to-reactflow.ts";
 import { aiEditFlow, aiGenerateFlow } from "./ai-editor.ts";
@@ -29,6 +30,18 @@ function redirect(to: string): Response {
 // Reserved session for the in-browser "test run" panel — real Telegram user ids are always
 // positive, so this can never collide with an actual conversation's state.
 const TEST_USER_ID = -1;
+
+// Optional — matches server-prod.ts's EVENT_SECRET. Unset means /event/<id>/<node> 404s outright
+// rather than being left open, same "off by default" rule as the admin export.
+const EVENT_SECRET = Deno.env.get("EVENT_SECRET") || undefined;
+
+function secretMatches(provided: string | null, expected: string): boolean {
+  if (!provided) return false;
+  const a = new TextEncoder().encode(provided);
+  const b = new TextEncoder().encode(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
 
 async function readRecentLeads(id: string, limit = 10): Promise<Record<string, unknown>[]> {
   try {
@@ -211,6 +224,36 @@ Deno.serve({ port: PORT }, async (req) => {
   if (req.method === "POST" && startMatch) {
     await manager.start(startMatch[1]);
     return redirect(`/bots/${startMatch[1]}`);
+  }
+
+  const eventMatch = pathname.match(/^\/event\/([^/]+)\/([^/]+)$/);
+  if (req.method === "POST" && eventMatch) {
+    const [, botId, nodeId] = eventMatch;
+    if (!EVENT_SECRET) return json({ error: "Event endpoint not configured" }, 404);
+    if (!secretMatches(req.headers.get("x-webhook-secret"), EVENT_SECRET)) {
+      return json({ error: "Unauthorized" }, 401);
+    }
+    const entry = manager.get(botId);
+    if (!entry) return json({ error: "Unknown bot" }, 404);
+
+    let payload: Record<string, string>;
+    try {
+      payload = await req.json();
+    } catch {
+      return json({ error: "Invalid JSON body" }, 400);
+    }
+
+    const result = await entry.engine.notifyEvent(nodeId, payload);
+    if (!result) return json({ error: `Unknown event node "${nodeId}"` }, 404);
+
+    const outcomes = await Promise.allSettled(
+      result.userIds.map((uid) => entry.bot.api.sendMessage(uid, result.text)),
+    );
+    const sent = outcomes.filter((o) => o.status === "fulfilled").length;
+    for (const o of outcomes) {
+      if (o.status === "rejected") console.error(`event "${nodeId}" delivery failed:`, o.reason);
+    }
+    return json({ sent, subscribers: result.userIds.length });
   }
 
   return new Response("Not found", { status: 404 });

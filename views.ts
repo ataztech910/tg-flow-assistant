@@ -425,7 +425,7 @@ export function renderBotDashboard(
           );
         }
 
-        var NODE_TYPES = ["message", "menu", "input", "webhook", "collect", "payment", "condition"];
+        var NODE_TYPES = ["message", "menu", "input", "webhook", "collect", "payment", "condition", "subscribe", "event"];
 
         function defaultNodeFor(type) {
           switch (type) {
@@ -436,6 +436,8 @@ export function renderBotDashboard(
             case "collect": return { type: "collect" };
             case "payment": return { type: "payment", title: "Item", description: "", currency: "XTR", amount: 1, payload: "item" };
             case "condition": return { type: "condition", field: "field_name" };
+            case "subscribe": return { type: "subscribe" };
+            case "event": return { type: "event", message: "🚨 {{message}}" };
           }
         }
 
@@ -609,6 +611,15 @@ export function renderBotDashboard(
               fields.push(field("If true", nextSelect(node.if_true, function (v) { set({ if_true: v }); }, allNodeIds, false)));
               fields.push(field("If false", nextSelect(node.if_false, function (v) { set({ if_false: v }); }, allNodeIds, false)));
               break;
+            case "subscribe":
+              fields.push(h("p", { className: "field-hint" }, "Adds whoever reaches this node to the subscriber list — no fields to configure."));
+              fields.push(field("Next", nextSelect(node.next, function (v) { set({ next: v }); }, allNodeIds, false)));
+              break;
+            case "event":
+              fields.push(h("p", { className: "field-hint" }, "Not reached by users — an external system POSTs to /event/<bot-id>/<this node's id> (see README) and this renders against that request's JSON body, sent to every subscriber."));
+              fields.push(field("Message template ({{field}} for values from the POST body)",
+                textArea(node.message, function (v) { set({ message: v }); })));
+              break;
           }
           return h("div", { className: "node-form" }, fields);
         }
@@ -696,7 +707,7 @@ export function renderBotDashboard(
                   h(NodeForm, { node: props.node, allNodeIds: props.allNodeIds, botId: props.botId, onChange: props.onDraftChange }),
                   h("div", { className: "node-panel-actions" },
                     h("button", { onClick: props.onSave, disabled: props.saving }, props.saving ? "Saving…" : "Save"),
-                    props.isStart ? null : h("button", { className: "ghost", onClick: props.onSetStart }, "Set as start"),
+                    (props.isStart || props.node.type === "event") ? null : h("button", { className: "ghost", onClick: props.onSetStart }, "Set as start"),
                     h("button", { className: "ghost danger", onClick: props.onDelete }, "Delete node"),
                   ),
                 )

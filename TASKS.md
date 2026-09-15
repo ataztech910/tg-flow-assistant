@@ -240,3 +240,24 @@
       без него роут отдаёт 404, а не работает "открыто по умолчанию". Читает из KV в проде на
       Deno Deploy, из `bots/<id>/data/leads.jsonl` на Docker/Cloud Run/AWS — тот же `useKv` флаг,
       что уже был. Задокументировано в README, добавлено в `deploy.env.example`.
+- [x] **Мониторинг/алерты — входящие события извне** — новый сценарий использования (не хайп,
+      реальный кейс: OTel-воркшоп на Next.js должен уметь толкнуть событие в бот). Два новых типа
+      узла: `subscribe` (добавляет пользователя в список подписчиков, `store.ts`: `addSubscriber`/
+      `listSubscribers`, тот же `kv:`/диск паттерн, что у лидов, но дедуп по ключу, не append-only)
+      и `event` (не достигается через `next` — рендерит `message`-шаблон против JSON-тела внешнего
+      POST, `engine.ts`: `notifyEvent(nodeId, payload)`, остаётся Telegram-agnostic — саму отправку
+      делает `server.ts`/`server-prod.ts` через `bot.api.sendMessage`). Новый роут `POST
+      /event/<bot-id>/<node-id>`, защищён `X-Webhook-Secret` + отдельным `EVENT_SECRET` (не
+      `ADMIN_SECRET` — этот секрет уходит во внешнюю систему, должен ротироваться независимо),
+      constant-time сравнение, тот же "выключено по умолчанию без секрета" паттерн. Есть и в
+      `server.ts` (локальная разработка), и в `server-prod.ts` (прод).
+      `event`-узлы — отдельные корни для reachability (и в `flow-check.ts`, и в
+      `flow-to-reactflow.ts`) — иначе ложно помечались бы "unreachable", хотя это by-design внешняя
+      точка входа. Дашборд (`views.ts`): добавлены в `NODE_TYPES`, `defaultNodeFor`, форма
+      редактирования узла — не оставлено пустой формой. `dsl-rules.md`: два новых раздела узлов +
+      паттерн "Monitoring / alerts" + переписан раздел про scheduled/recurring content (было
+      категорично "не поддерживается", теперь: сам движок не планирует, но внешний cron/scheduler,
+      бьющий в `/event`, — рабочий и честный способ). Проверено: `deno check`/`lint` по всем
+      затронутым файлам, реальный прогон движка (subscribe → notifyEvent → рендер шаблона →
+      правильный список подписчиков, исключая неподписанного пользователя), `validate.ts` на живом
+      flow.yaml с обоими типами (event правильно засчитан reachable, не false-positive warning).
