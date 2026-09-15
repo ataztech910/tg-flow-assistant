@@ -1,0 +1,14 @@
+# Per-bot runtime state — tokens, uploaded media, collected leads, edit history. Never commit
+# real bot credentials; these directories only exist locally after you create a bot.
+bots/
+
+# Single-bot CLI mode's local data dir (bot.ts, test-run.ts default).
+data/
+
+# Deploy secrets (bot tokens, webhook URL) — see README "Deploying to production".
+deploy.env
+*.env
+!.env.example
+
+# Editor/OS noise
+.DS_Store

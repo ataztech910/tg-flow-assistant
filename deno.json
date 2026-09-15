@@ -1,0 +1,14 @@
+{
+  "imports": {
+    "@kitana-sdk/core": "npm:@kitana-sdk/core@^0.1.8"
+  },
+  "deploy": {
+    "org": "tofo",
+    "app": "botflow-prod"
+  },
+  "lint": {
+    "rules": {
+      "exclude": ["no-import-prefix", "no-unversioned-import", "ban-types", "no-explicit-any"]
+    }
+  }
+}

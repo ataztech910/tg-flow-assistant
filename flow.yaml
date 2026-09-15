@@ -1,0 +1,96 @@
+start_node: welcome
+
+nodes:
+  welcome:
+    type: menu
+    text: "Welcome to BotFlow! 👋 Choose an option:"
+    buttons:
+      - label: "About"
+        next: about
+      - label: "Pricing"
+        next: pricing
+      - label: "🧪 Full demo (data + CRM + payment)"
+        next: ask_name
+
+  about:
+    type: message
+    text: "BotFlow lets you build Telegram bots from YAML. No code needed."
+    buttons:
+      - label: "⬅️ Back"
+        next: welcome
+
+  pricing:
+    type: menu
+    text: "Our pricing: Free tier available. Pro at €19/month."
+    buttons:
+      - label: "🚀 Get started"
+        next: get_started
+      - label: "⬅️ Back"
+        next: welcome
+
+  get_started:
+    type: message
+    text: "Great choice! Visit https://example.com to sign up."
+    buttons:
+      - label: "⬅️ Back to menu"
+        next: welcome
+
+  # --- Full demo: input -> internal CRM collect -> external webhook -> payment ---
+
+  ask_name:
+    type: input
+    text: "What's your name?"
+    save_as: name
+    next: ask_email
+
+  ask_email:
+    type: input
+    text: "What's your email?"
+    save_as: email
+    next: save_lead
+
+  save_lead:
+    type: collect
+    fields: [name, email]
+    next: forward_to_crm
+
+  forward_to_crm:
+    type: webhook
+    url: "http://localhost:8787/leads"
+    method: POST
+    body:
+      name: "{{name}}"
+      email: "{{email}}"
+      source: "botflow-demo"
+    next: thank_you
+    on_error: webhook_failed
+
+  webhook_failed:
+    type: message
+    text: "⚠️ Couldn't reach the CRM right now, but your info was saved on our side."
+    buttons:
+      - label: "Continue"
+        next: pay_pro
+
+  thank_you:
+    type: message
+    text: "Thanks {{name}}! Your details were saved and sent to the CRM."
+    buttons:
+      - label: "Continue to payment"
+        next: pay_pro
+
+  pay_pro:
+    type: payment
+    title: "Pro plan"
+    description: "1 month of BotFlow Pro access"
+    currency: "XTR"   # Telegram Stars — no external provider needed
+    amount: 10        # 10 Stars
+    payload: "pro_plan_1m"
+    next: payment_success
+
+  payment_success:
+    type: message
+    text: "🎉 Payment successful, {{name}}! Welcome to Pro."
+    buttons:
+      - label: "⬅️ Back to menu"
+        next: welcome
